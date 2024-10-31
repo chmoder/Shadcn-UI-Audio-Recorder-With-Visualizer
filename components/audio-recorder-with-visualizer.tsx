@@ -3,16 +3,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { Download, Mic, Trash } from "lucide-react";
+import { CirclePause, Download, Mic, Trash } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 
 type Props = {
   className?: string;
   timerClassName?: string;
+  onSave?: (blob: Blob) => unknown;
+  onPause?: (blob: Blob) => unknown;
 };
 
 type Record = {
@@ -21,7 +24,6 @@ type Record = {
   file: any;
 };
 
-let recorder: MediaRecorder;
 let recordingChunks: BlobPart[] = [];
 let timerTimeout: NodeJS.Timeout;
 
@@ -34,7 +36,7 @@ const padWithLeadingZeros = (num: number, length: number): string => {
 const downloadBlob = (blob: Blob) => {
   const downloadLink = document.createElement("a");
   downloadLink.href = URL.createObjectURL(blob);
-  downloadLink.download = `Audio_${new Date().getMilliseconds()}.mp3`;
+  downloadLink.download = `audio_${new Date().getMilliseconds()}.wav`;
   document.body.appendChild(downloadLink);
   downloadLink.click();
   document.body.removeChild(downloadLink);
@@ -43,10 +45,13 @@ const downloadBlob = (blob: Blob) => {
 export const AudioRecorderWithVisualizer = ({
   className,
   timerClassName,
+  onSave,
+  onPause,
 }: Props) => {
   const { theme } = useTheme();
   // States
   const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isRecordingFinished, setIsRecordingFinished] =
     useState<boolean>(false);
   const [timer, setTimer] = useState<number>(0);
@@ -63,15 +68,15 @@ export const AudioRecorderWithVisualizer = ({
   // Split the hours, minutes, and seconds into individual digits
   const [hourLeft, hourRight] = useMemo(
     () => padWithLeadingZeros(hours, 2).split(""),
-    [hours]
+    [hours],
   );
   const [minuteLeft, minuteRight] = useMemo(
     () => padWithLeadingZeros(minutes, 2).split(""),
-    [minutes]
+    [minutes],
   );
   const [secondLeft, secondRight] = useMemo(
     () => padWithLeadingZeros(seconds, 2).split(""),
-    [seconds]
+    [seconds],
   );
   // Refs
   const mediaRecorderRef = useRef<{
@@ -109,38 +114,74 @@ export const AudioRecorderWithVisualizer = ({
             audioContext: audioCtx,
           };
 
-          const mimeType = MediaRecorder.isTypeSupported("audio/mpeg")
-            ? "audio/mpeg"
-            : MediaRecorder.isTypeSupported("audio/webm")
-            ? "audio/webm"
-            : "audio/wav";
-
-          const options = { mimeType };
-          mediaRecorderRef.current.mediaRecorder = new MediaRecorder(
-            stream,
-            options
-          );
-          mediaRecorderRef.current.mediaRecorder.start();
+          mediaRecorderRef.current.mediaRecorder = new MediaRecorder(stream);
+          mediaRecorderRef.current.mediaRecorder.start(100);
           recordingChunks = [];
+
           // ============ Recording ============
-          recorder = new MediaRecorder(stream);
-          recorder.start();
-          recorder.ondataavailable = (e) => {
+          mediaRecorderRef.current.mediaRecorder.ondataavailable = (e) => {
             recordingChunks.push(e.data);
           };
         })
         .catch((error) => {
-          alert(error);
-          console.log(error);
+          console.error(error);
         });
     }
   }
+  function pauseRecording() {
+    const recorder = mediaRecorderRef.current.mediaRecorder;
+
+    if (!recorder) {
+      return;
+    }
+
+    recorder.onpause = () => {
+      if (onPause) {
+        const recordBlob = new Blob(recordingChunks, {
+          type: "audio/wav",
+        });
+        onPause(recordBlob);
+      }
+    };
+
+    recorder.pause();
+
+    setIsRecording(false);
+    setIsPaused(true);
+    setIsRecordingFinished(false);
+  }
+  function resumeRecording() {
+    const recorder = mediaRecorderRef.current.mediaRecorder;
+
+    if (!recorder) {
+      return;
+    }
+
+    recorder.resume();
+
+    setIsRecording(true);
+    setIsPaused(false);
+    setIsRecordingFinished(false);
+  }
   function stopRecording() {
+    const recorder = mediaRecorderRef.current.mediaRecorder;
+
+    if (!recorder) {
+      return;
+    }
+
     recorder.onstop = () => {
       const recordBlob = new Blob(recordingChunks, {
         type: "audio/wav",
       });
-      downloadBlob(recordBlob);
+
+      if (onSave) {
+        onSave(recordBlob);
+      } else {
+        downloadBlob(recordBlob);
+      }
+
+      // @Anurag-Kochar-1 Not sure why this is here?
       setCurrentRecord({
         ...currentRecord,
         file: window.URL.createObjectURL(recordBlob),
@@ -151,6 +192,7 @@ export const AudioRecorderWithVisualizer = ({
     recorder.stop();
 
     setIsRecording(false);
+    setIsPaused(false);
     setIsRecordingFinished(true);
     setTimer(0);
     clearTimeout(timerTimeout);
@@ -179,6 +221,7 @@ export const AudioRecorderWithVisualizer = ({
       audioContext.close();
     }
     setIsRecording(false);
+    setIsPaused(false);
     setIsRecordingFinished(true);
     setTimer(0);
     clearTimeout(timerTimeout);
@@ -195,19 +238,20 @@ export const AudioRecorderWithVisualizer = ({
       }
     }
   }
+
   const handleSubmit = () => {
     stopRecording();
   };
 
   // Effect to update the timer every second
   useEffect(() => {
-    if (isRecording) {
+    if (isRecording && !isPaused) {
       timerTimeout = setTimeout(() => {
         setTimer(timer + 1);
       }, 1000);
     }
     return () => clearTimeout(timerTimeout);
-  }, [isRecording, timer]);
+  }, [isRecording, isPaused, timer]);
 
   // Visualizer
   useEffect(() => {
@@ -260,7 +304,7 @@ export const AudioRecorderWithVisualizer = ({
       draw();
     };
 
-    if (isRecording) {
+    if (isRecording || isPaused) {
       visualizeVolume();
     } else {
       if (canvasCtx) {
@@ -272,75 +316,121 @@ export const AudioRecorderWithVisualizer = ({
     return () => {
       cancelAnimationFrame(animationRef.current || 0);
     };
-  }, [isRecording, theme]);
+  }, [isRecording, isPaused, theme]);
 
   return (
-    <div
-      className={cn(
-        "flex h-16 rounded-md relative w-full items-center justify-center gap-2 max-w-5xl",
-        {
-          "border p-1": isRecording,
-          "border-none p-0": !isRecording,
-        },
-        className
-      )}
-    >
-      {isRecording ? (
-        <Timer
-          hourLeft={hourLeft}
-          hourRight={hourRight}
-          minuteLeft={minuteLeft}
-          minuteRight={minuteRight}
-          secondLeft={secondLeft}
-          secondRight={secondRight}
-          timerClassName={timerClassName}
-        />
-      ) : null}
-      <canvas
-        ref={canvasRef}
-        className={`h-full w-full bg-background ${
-          !isRecording ? "hidden" : "flex"
-        }`}
-      />
-      <div className="flex gap-2">
-        {/* ========== Delete recording button ========== */}
-        {isRecording ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                onClick={resetRecording}
-                size={"icon"}
-                variant={"destructive"}
-              >
-                <Trash size={15} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent className="m-2">
-              <span> Reset recording</span>
-            </TooltipContent>
-          </Tooltip>
+    <div className="block">
+      <div
+        className={cn(
+          "flex h-16 rounded-md relative w-full items-center justify-center gap-2 max-w-5xl",
+          {
+            "border p-1": isRecording || isPaused,
+            "border-none p-0": !isRecording,
+          },
+          className,
+        )}
+      >
+        {isRecording || isPaused ? (
+          <Timer
+            hourLeft={hourLeft}
+            hourRight={hourRight}
+            minuteLeft={minuteLeft}
+            minuteRight={minuteRight}
+            secondLeft={secondLeft}
+            secondRight={secondRight}
+            timerClassName={timerClassName}
+          />
         ) : null}
+        <canvas
+          ref={canvasRef}
+          className={`h-full w-full bg-background ${
+            !isRecording && !isPaused ? "hidden" : "flex"
+          }`}
+        />
+        <div className="flex gap-2">
+          {/* ========== Pause recording button ========== */}
+          {isRecording && !isPaused ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={pauseRecording}
+                    size={"icon"}
+                    variant={"secondary"}
+                  >
+                    <CirclePause size={15} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="m-2">
+                  <span> Pause recording</span>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : null}
+          {/* ========== Resume recording button ========== */}
+          {!isRecording && isPaused ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={resumeRecording}
+                    size={"icon"}
+                    variant={"secondary"}
+                  >
+                    <Mic size={15} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="m-2">
+                  <span> Resume recording</span>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : null}
+          {/* ========== Delete recording button ========== */}
+          {isRecording || isPaused ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={resetRecording}
+                    size={"icon"}
+                    variant={"destructive"}
+                  >
+                    <Trash size={15} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="m-2">
+                  <span> Reset recording</span>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : null}
 
-        {/* ========== Start and send recording button ========== */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            {!isRecording ? (
-              <Button onClick={() => startRecording()} size={"icon"}>
-                <Mic size={15} />
-              </Button>
-            ) : (
-              <Button onClick={handleSubmit} size={"icon"}>
-                <Download size={15} />
-              </Button>
-            )}
-          </TooltipTrigger>
-          <TooltipContent className="m-2">
-            <span>
-              {" "}
-              {!isRecording ? "Start recording" : "Download recording"}{" "}
-            </span>
-          </TooltipContent>
-        </Tooltip>
+          {/* ========== Start and send recording button ========== */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {!isRecording && !isPaused ? (
+                  <Button onClick={() => startRecording()} size={"icon"}>
+                    <Mic size={15} />
+                  </Button>
+                ) : (
+                  <Button onClick={handleSubmit} size={"icon"}>
+                    <Download size={15} />
+                  </Button>
+                )}
+              </TooltipTrigger>
+              <TooltipContent className="m-2">
+                <span>
+                  {" "}
+                  {!isRecording && !isPaused
+                    ? "Start recording"
+                    : "Download recording"}{" "}
+                </span>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </div>
     </div>
   );
@@ -368,7 +458,7 @@ const Timer = React.memo(
       <div
         className={cn(
           "items-center -top-12 left-0 absolute justify-center gap-0.5 border p-1.5 rounded-md font-mono font-medium text-foreground flex",
-          timerClassName
+          timerClassName,
         )}
       >
         <span className="rounded-md bg-background p-0.5 text-foreground">
@@ -393,6 +483,6 @@ const Timer = React.memo(
         </span>
       </div>
     );
-  }
+  },
 );
 Timer.displayName = "Timer";
