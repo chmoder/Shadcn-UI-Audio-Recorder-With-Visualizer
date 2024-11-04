@@ -16,6 +16,7 @@ type Props = {
   timerClassName?: string;
   onSave?: (blob: Blob) => unknown;
   onPause?: (blob: Blob) => unknown;
+  onReset?: () => unknown;
 };
 
 type Record = {
@@ -47,6 +48,7 @@ export const AudioRecorderWithVisualizer = ({
   timerClassName,
   onSave,
   onPause,
+  onReset,
 }: Props) => {
   const { theme } = useTheme();
   // States
@@ -200,6 +202,10 @@ export const AudioRecorderWithVisualizer = ({
   function resetRecording() {
     const { mediaRecorder, stream, analyser, audioContext } =
       mediaRecorderRef.current;
+
+    if (onReset) {
+      onReset();
+    }
 
     if (mediaRecorder) {
       mediaRecorder.onstop = () => {
